@@ -2,87 +2,65 @@
 
 基于 **Intel RealSense D415** 或 **普通 USB 摄像头** 的实时 YOLO11 三分类目标检测推理模块。
 
-## 🏷️ 检测类别 (3 类)
+## 检测类别 (3 类)
 
 | Class ID | 名称 | 含义 |
-|---|---|---|
-| 0 | R1 | (R_R1 + B_R1) |
-| 1 | T | (T_03 ~ T_17) |
-| 2 | F | (F_18 ~ F_32) |
+|----------|------|------|
+| 0        | R1   | (R_R1 + B_R1) |
+| 1        | T    | (T_03 ~ T_17) |
+| 2        | F    | (F_18 ~ F_32) |
 
-## 📁 目录结构
+---
 
-```
-realsense_inference/
-├── CMakeLists.txt              # CMake 构建配置
-├── models/                     # ONNX 模型存放
-│   └── kfs_yolo11_3class.onnx
-├── include/
-│   ├── yolo_detector.h         # 检测器头文件 (统一推理)
-│   ├── rs_capture.h            # RealSense D415 驱动
-│   └── usb_capture.h           # USB /dev/video* 驱动
-├── src/
-│   ├── main.cpp                # 主程序 (debug 可视化 + 控制台输出)
-│   ├── yolo_detector.cpp       # YOLO11 ONNX 推理核心
-│   ├── rs_capture.cpp          # RealSense D415 采集
-│   └── usb_capture.cpp         # USB 摄像头采集
-├── scripts/
-│   └── export_onnx.py          # 导出训练模型为 ONNX (详细帮助见下文)
-└── README.md
-```
+## 依赖
 
-## 🔧 依赖安装
+### 系统依赖 (C++ 编译)
+
+| 依赖 | 版本要求 | 必需 | 安装命令 |
+|------|----------|------|----------|
+| CMake | ≥ 3.16 | ✅ | `sudo apt install cmake` |
+| GCC / Clang (C++17) | ≥ 8 / ≥ 7 | ✅ | `sudo apt install build-essential` |
+| OpenCV | ≥ 4.x | ✅ | `sudo apt install libopencv-dev` |
+| ONNX Runtime | ≥ 1.16 | ✅ | 见下方安装说明 |
+| yaml-cpp | 任意 | ✅ | `sudo apt install libyaml-cpp-dev` |
+| librealsense2 | ≥ 2.50 | ❌ | `sudo apt install librealsense2-dev` |
+
+> ❌ = 可选, 仅 RealSense D415 需要。没有 D415 可用 USB 摄像头正常编译运行。
+
+### Python 依赖 (仅导出 ONNX 时需要)
 
 ```bash
-# OpenCV (≥4.x) — 必需
-sudo apt install libopencv-dev
-
-# ONNX Runtime — 必需
-# 方式 A: apt
-sudo apt install libonnxruntime-dev
-
-# 方式 B: 手动 (推荐, 版本可控)
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
-tar xzf onnxruntime-linux-x64-1.19.2.tgz
-export ONNXRUNTIME_DIR=$(pwd)/onnxruntime-linux-x64-1.19.2
-
-# librealsense2 — 可选 (仅 RealSense D415 需要)
-sudo apt install librealsense2-dev
+pip install ultralytics onnx onnx-simplifier
 ```
 
-> **注意**: 没有 RealSense D415 也可以编译运行，只需使用 `--camera usb` 即可驱动普通 USB 摄像头。
+### 一键安装
 
-## 🚀 快速开始
+```bash
+# 必需项
+sudo apt install -y cmake build-essential libopencv-dev libyaml-cpp-dev
+
+# ONNX Runtime (推荐手动安装以控制版本)
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
+tar xzf onnxruntime-linux-x64-1.19.2.tgz
+echo 'export ONNXRUNTIME_DIR='"$(pwd)"'/onnxruntime-linux-x64-1.19.2' >> ~/.bashrc
+
+# 可选 — RealSense D415
+sudo apt install -y librealsense2-dev
+```
+
+---
+
+## 部署
 
 ### 1. 导出 ONNX 模型
 
 ```bash
-cd ~/KFS_training/realsense_inference
-
-# 自动查找 best.pt 并导出 (推荐)
-python scripts/export_onnx.py
-
-# 列出项目下所有可用的 .pt 文件
-python scripts/export_onnx.py --list-pt
-
-# 指定 .pt 路径
-python scripts/export_onnx.py --pt ~/KFS_training/training_output/runs/KFS_full_3class/weights/best.pt
-
-# 导出并验证
-python scripts/export_onnx.py --verify
-
-# 导出 FP16 半精度 (更小更快, 需 GPU 推理)
-python scripts/export_onnx.py --half
-
-# 导出其他格式
-python scripts/export_onnx.py --format openvino   # Intel OpenVINO
-python scripts/export_onnx.py --format engine      # NVIDIA TensorRT
-
-# 查看完整帮助
-python scripts/export_onnx.py --help
+cd realsense_inference
+python scripts/export_onnx.py                    # 自动查找 best.pt 导出
+python scripts/export_onnx.py --pt /path/to/best.pt   # 指定 .pt 路径
 ```
 
-### 2. 编译 C++ 推理模块
+### 2. 编译
 
 ```bash
 mkdir -p build && cd build
@@ -90,81 +68,75 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-如果 ONNX Runtime 是手动安装的:
+如果 ONNX Runtime 是手动安装的：
 
 ```bash
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-         -DONNXRUNTIME_DIR=/path/to/onnxruntime-linux-x64-1.19.2
+cmake .. -DCMAKE_BUILD_TYPE=Release -DONNXRUNTIME_DIR=/path/to/onnxruntime-linux-x64-1.19.2
 ```
 
-### 3. 运行
+### 3. 配置
 
-#### RealSense D415 (默认)
+编辑 `config/kfs_config.yaml`：
+
+```yaml
+camera:
+  type: usb             # realsense 或 usb
+  usb:
+    device: 0
+    width: 640
+    height: 480
+    fps: 60
+    fourcc: "MJPG"
+model:
+  path: models/kfs_yolo11_3class.onnx
+  input_size: 640
+  conf_threshold: 0.25
+  iou_threshold: 0.30
+display:
+  debug: true           # false = 仅终端输出, 无 GUI
+```
+
+### 4. 运行
 
 ```bash
-# Debug 模式 (显示推理画面 + 角点)
-./kfs_detect --camera realsense --debug
-
-# 无 GUI 模式 (仅终端输出)
-./kfs_detect --camera realsense --no-debug
+./build/kfs_detect                          # 使用默认配置
+./build/kfs_detect --config my_config.yaml  # 指定配置
+./build/kfs_detect --list-cameras           # 列出 USB 摄像头
 ```
 
-#### USB 摄像头 (/dev/videoN)
+---
 
-```bash
-# 列出所有可用摄像头及其支持的分辨率
-./kfs_detect --list-cameras
-
-# 默认 /dev/video0, 自动检测最佳分辨率
-./kfs_detect --camera usb --debug
-
-# 指定设备号和分辨率
-./kfs_detect --camera usb --device 2 --width 1280 --height 720 --debug
-
-# 指定帧率
-./kfs_detect --camera usb --device 0 --width 1920 --height 1080 --fps 30 --debug
-
-# 无 GUI 模式
-./kfs_detect --camera usb --device 0 --no-debug
-```
-
-#### 自定义参数
-
-```bash
-./kfs_detect --camera usb --debug --conf 0.5 --iou 0.4 --model ../models/custom.onnx
-```
-
-## 🎮 Debug 模式操作
+## Debug 模式按键
 
 | 按键 | 功能 |
-|---|---|
+|------|------|
 | `q` / `ESC` | 退出 |
 | `s` | 截图保存为 PNG |
+| `SPACE` | 触发单次推理 / 切换连续模式 |
+| `m` | 切换 IDLE / CONTINUOUS 模式 |
 
-## 📊 输出格式
+---
 
-每个检测框包含:
+## 输出格式
 
 ```cpp
 struct Detection {
     int class_id;           // 0=R1, 1=T, 2=F
     string class_name;      // "R1", "T", "F"
     float confidence;       // [0, 1]
-
-    // 4 个角点 (像素坐标)
-    Point2f corner_tl;      // 左上
-    Point2f corner_tr;      // 右上
-    Point2f corner_br;      // 右下
-    Point2f corner_bl;      // 左下
+    Point2f corner_tl;      // 左上角 (像素坐标)
+    Point2f corner_tr;      // 右上角
+    Point2f corner_br;      // 右下角
+    Point2f corner_bl;      // 左下角
 };
 ```
 
-### 终端输出示例
+终端输出示例：
 
 ```
 ═══════════════════════════════════════════
   KFS 实时检测结果
-  帧尺寸: 1920×1080 | 推理: 8.2 ms
+  帧尺寸: 640×480 | 推理: 8.2 ms
 ───────────────────────────────────────────
   # | 类别 | 置信度 | 左上角点 (x,y) | 右下角点 (x,y)
 ───────────────────────────────────────────
@@ -174,30 +146,30 @@ struct Detection {
 ═══════════════════════════════════════════
 ```
 
-## 📝 命令行参数
+---
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `--camera TYPE` | `realsense` | 相机类型: `realsense` 或 `usb` |
-| `--list-cameras` | - | 列出所有 USB 摄像头及支持的分辨率 |
-| `--device N` | `0` | USB 设备号 /dev/videoN |
-| `--width W` | `1920` | USB 相机分辨率宽 |
-| `--height H` | `1080` | USB 相机分辨率高 |
-| `--fps N` | `30` | USB 相机帧率 |
-| `--debug` | 开启 | 显示 OpenCV 可视化窗口 |
-| `--no-debug` | - | 仅终端文本输出 |
-| `--model PATH` | `models/kfs_yolo11_3class.onnx` | ONNX 模型路径 |
-| `--conf VALUE` | `0.25` | 置信度阈值 |
-| `--iou VALUE` | `0.45` | NMS IoU 阈值 |
-| `--size VALUE` | `640` | 模型输入尺寸 |
-| `--help, -h` | - | 显示帮助信息 |
+## 目录结构
 
-## ⚙️ 相机权限 (Linux)
-
-### USB 摄像头
-
-```bash
-# 将当前用户加入 video 组
+```
+realsense_inference/
+├── CMakeLists.txt
+├── config/
+│   └── kfs_config.yaml         # 全局 YAML 配置
+├── models/
+│   └── kfs_yolo11_3class.onnx  # ONNX 模型
+├── include/
+│   ├── yolo_detector.h         # 推理核心
+│   ├── rs_capture.h            # RealSense D415 采集
+│   └── usb_capture.h           # USB 摄像头采集
+├── src/
+│   ├── main.cpp                # 主程序
+│   ├── yolo_detector.cpp       # ONNX 推理实现
+│   ├── rs_capture.cpp          # D415 实现
+│   └── usb_capture.cpp         # USB 实现
+├── scripts/
+│   └── export_onnx.py          # .pt → .onnx 导出
+└── README.md
+```
 sudo usermod -aG video $USER
 # 重新登录生效
 ```
@@ -234,7 +206,7 @@ int main() {
 }
 ```
 
-## � ONNX 导出脚本详细帮助
+## ❔ ONNX 导出脚本详细帮助
 
 ```bash
 cd ~/KFS_training/realsense_inference
