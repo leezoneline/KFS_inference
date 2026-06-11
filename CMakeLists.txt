@@ -26,6 +26,10 @@ endif()
 # 依赖查找
 # ============================================================
 
+# --- yaml-cpp (配置文件解析) ---
+find_package(yaml-cpp REQUIRED)
+message(STATUS "yaml-cpp found")
+
 # --- OpenCV (显示 + 预处理) ---
 find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
@@ -108,6 +112,7 @@ endif()
 target_link_libraries(kfs_detect PRIVATE
     ${OpenCV_LIBS}
     ${ONNXRUNTIME_LIB}
+    yaml-cpp
     pthread
 )
 
@@ -127,6 +132,7 @@ message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "  KFS RealSense D415 推理模块")
 message(STATUS "  3 类检测: R1 / T / F")
+message(STATUS "  配置: config/kfs_config.yaml (YAML)")
 message(STATUS "========================================")
 message(STATUS "  编译: mkdir build && cd build")
 message(STATUS "         cmake .. -DCMAKE_BUILD_TYPE=Release")

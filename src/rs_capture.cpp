@@ -40,7 +40,7 @@ struct RealSenseCapture::Impl {
             return true;
         }
         catch (const rs2::error& e) {
-            std::cerr << "[RealSense] 启动失败: " << e.what() << std::endl;
+            std::cout << "[RealSense] 启动失败: " << e.what() << std::endl;
             return false;
         }
     }
@@ -53,7 +53,7 @@ struct RealSenseCapture::Impl {
             std::cout << "[RealSense] 流已停止" << std::endl;
         }
         catch (const rs2::error& e) {
-            std::cerr << "[RealSense] 停止异常: " << e.what() << std::endl;
+            std::cout << "[RealSense] 停止异常: " << e.what() << std::endl;
         }
     }
 };
@@ -87,7 +87,7 @@ bool RealSenseCapture::getFrame(cv::Mat& frame) {
         return !frame.empty();
     }
     catch (const rs2::error& e) {
-        std::cerr << "[RealSense] 取帧错误: " << e.what() << std::endl;
+        std::cout << "[RealSense] 取帧错误: " << e.what() << std::endl;
         return false;
     }
 }

@@ -43,6 +43,9 @@
 #include <csignal>
 #include <atomic>
 #include <thread>
+#include <cstdio>
+
+#include <yaml-cpp/yaml.h>
 
 // ============================================================
 // 全局标志
@@ -54,164 +57,138 @@ static void signalHandler(int) {
 }
 
 // ============================================================
-// 命令行参数解析
+// YAML 配置结构
 // ============================================================
-struct Args {
-    std::string cameraType = "realsense";  // "realsense" 或 "usb"
+struct Config {
+    std::string cameraType = "usb";
     std::string modelPath  = "models/kfs_yolo11_3class.onnx";
-    std::string configPath;                // 配置文件路径
     bool        debug      = true;
     float       confThresh = 0.25f;
-    float       iouThresh  = 0.30f;  // 更激进的 NMS, 减少重复框
+    float       iouThresh  = 0.30f;
     int         inputSize  = 640;
 
     // USB 相机参数
     int         usbDevice  = 0;
-    int         usbWidth   = 1920;
-    int         usbHeight  = 1080;
+    int         usbWidth   = 1280;
+    int         usbHeight  = 1024;
     int         usbFPS     = 30;
-    std::string usbFourcc  = "MJPG";
+    std::string usbFourcc  = "";
 
     // 相机控制 (V4L2)
-    int  autoExposure  = -1;    // -1=自动, 1=手动
-    int  exposure      = -1;    // 手动曝光值
+    int  autoExposure  = -1;
+    int  exposure      = -1;
     int  gain          = -1;
     int  brightness    = -1;
     int  contrast      = -1;
     int  saturation    = -1;
-    int  whiteBalance  = -1;    // -1=自动
+    int  whiteBalance  = -1;
     int  sharpness     = -1;
 };
 
-// 简单配置文件解析 (key = value 格式)
-static void loadConfig(const std::string& path, Args& args) {
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        std::cerr << "[WARN] 无法打开配置文件: " << path << std::endl;
-        return;
-    }
-    std::string line;
-    while (std::getline(f, line)) {
-        // 去注释和空白
-        auto pos = line.find('#');
-        if (pos != std::string::npos) line = line.substr(0, pos);
-        // 去首尾空白
-        while (!line.empty() && std::isspace(line.front())) line.erase(0, 1);
-        while (!line.empty() && std::isspace(line.back()))  line.pop_back();
-        if (line.empty()) continue;
-
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        // 去空白
-        while (!key.empty() && std::isspace(key.back())) key.pop_back();
-        while (!val.empty() && std::isspace(val.front())) val.erase(0, 1);
-
-        if      (key == "device")        args.usbDevice     = std::stoi(val);
-        else if (key == "width")         args.usbWidth      = std::stoi(val);
-        else if (key == "height")        args.usbHeight     = std::stoi(val);
-        else if (key == "fps")           args.usbFPS        = std::stoi(val);
-        else if (key == "fourcc")        args.usbFourcc     = val;
-        else if (key == "auto_exposure") args.autoExposure  = std::stoi(val);
-        else if (key == "exposure")      args.exposure      = std::stoi(val);
-        else if (key == "gain")          args.gain          = std::stoi(val);
-        else if (key == "brightness")    args.brightness    = std::stoi(val);
-        else if (key == "contrast")      args.contrast      = std::stoi(val);
-        else if (key == "saturation")    args.saturation    = std::stoi(val);
-        else if (key == "white_balance") args.whiteBalance  = std::stoi(val);
-        else if (key == "sharpness")     args.sharpness     = std::stoi(val);
-    }
-    std::cout << "[CONFIG] 已加载: " << path << std::endl;
+// YAML 辅助: 获取节点值 (缺失时返回默认值)
+static int yamlInt(const YAML::Node& node, const std::string& key, int defval) {
+    if (node && node[key]) return node[key].as<int>();
+    return defval;
+}
+static float yamlFloat(const YAML::Node& node, const std::string& key, float defval) {
+    if (node && node[key]) return node[key].as<float>();
+    return defval;
+}
+static std::string yamlStr(const YAML::Node& node, const std::string& key, const std::string& defval) {
+    if (node && node[key]) return node[key].as<std::string>();
+    return defval;
+}
+static bool yamlBool(const YAML::Node& node, const std::string& key, bool defval) {
+    if (node && node[key]) return node[key].as<bool>();
+    return defval;
 }
 
-Args parseArgs(int argc, char** argv) {
-    Args args;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--camera" && i + 1 < argc) {
-            args.cameraType = argv[++i];
-        } else if (arg == "--config" && i + 1 < argc) {
-            args.configPath = argv[++i];
-            loadConfig(args.configPath, args);
-        } else if (arg == "--debug") {
-            args.debug = true;
-        } else if (arg == "--no-debug") {
-            args.debug = false;
-        } else if (arg == "--model" && i + 1 < argc) {
-            args.modelPath = argv[++i];
-        } else if (arg == "--conf" && i + 1 < argc) {
-            args.confThresh = std::stof(argv[++i]);
-        } else if (arg == "--iou" && i + 1 < argc) {
-            args.iouThresh = std::stof(argv[++i]);
-        } else if (arg == "--size" && i + 1 < argc) {
-            args.inputSize = std::stoi(argv[++i]);
-        } else if (arg == "--device" && i + 1 < argc) {
-            args.usbDevice = std::stoi(argv[++i]);
-        } else if (arg == "--width" && i + 1 < argc) {
-            args.usbWidth = std::stoi(argv[++i]);
-        } else if (arg == "--height" && i + 1 < argc) {
-            args.usbHeight = std::stoi(argv[++i]);
-        } else if (arg == "--fps" && i + 1 < argc) {
-            args.usbFPS = std::stoi(argv[++i]);
-        } else if (arg == "--list-cameras") {
-            std::cout << "═══════════════════════════════════════════\n";
-            std::cout << "  系统 USB 摄像头列表\n";
-            std::cout << "═══════════════════════════════════════════\n\n";
+static Config loadYamlConfig(const std::string& path) {
+    Config cfg;
+    try {
+        YAML::Node root = YAML::LoadFile(path);
 
-            auto devices = USBCapture::listDevices();
-            if (devices.empty()) {
-                std::cout << "  未检测到 USB 摄像头\n\n";
-                std::cout << "  提示:\n";
-                std::cout << "    - 检查 USB 连接: ls /dev/video*\n";
-                std::cout << "    - 检查权限: sudo usermod -aG video $USER\n";
-            } else {
-                for (int dev : devices) {
-                    std::cout << "  /dev/video" << dev << ":\n";
-                    auto resList = USBCapture::listResolutions(dev);
-                    if (resList.empty()) {
-                        std::cout << "    (无法获取分辨率列表)\n";
-                    } else {
-                        for (const auto& r : resList) {
-                            std::cout << "    - " << r.width << "×" << r.height
-                                      << " @ " << static_cast<int>(r.fps) << " fps\n";
-                        }
-                    }
-                }
+        // camera
+        if (root["camera"]) {
+            auto cam = root["camera"];
+            cfg.cameraType = yamlStr(cam, "type", cfg.cameraType);
+
+            if (cam["usb"]) {
+                auto usb = cam["usb"];
+                cfg.usbDevice = yamlInt(usb, "device", cfg.usbDevice);
+                cfg.usbWidth  = yamlInt(usb, "width",  cfg.usbWidth);
+                cfg.usbHeight = yamlInt(usb, "height", cfg.usbHeight);
+                cfg.usbFPS    = yamlInt(usb, "fps",    cfg.usbFPS);
+                cfg.usbFourcc = yamlStr(usb, "fourcc", cfg.usbFourcc);
             }
-            std::cout << "\n═══════════════════════════════════════════\n";
 
-            // 同时提示 RealSense 检测
-            std::cout << "\n  提示: RealSense D415 请用 --camera realsense\n";
-            std::cout << "  使用 --camera usb --device N 指定摄像头\n\n";
-            exit(0);
-        } else if (arg == "--help" || arg == "-h") {
-            std::cout << "用法: ./kfs_detect [选项]\n\n"
-                      << "== 相机选择 ==\n"
-                      << "  --camera TYPE       相机类型: realsense (默认) 或 usb\n"
-                      << "  --list-cameras      列出所有 USB 摄像头及支持的分辨率\n\n"
-                      << "== USB 相机参数 ==\n"
-                      << "  --device N          设备号 /dev/videoN (默认: 0)\n"
-                      << "  --width W           分辨率宽 (默认: 1920)\n"
-                      << "  --height H          分辨率高 (默认: 1080)\n"
-                      << "  --fps N             帧率 (默认: 30)\n"
-                      << "  --config PATH       相机配置文件 (覆盖命令行参数)\n\n"
-                      << "== 推理参数 ==\n"
-                      << "  --model PATH        ONNX 模型路径\n"
-                      << "  --conf VALUE        置信度阈值 (默认: 0.25)\n"
-                      << "  --iou VALUE         NMS IOU 阈值 (默认: 0.45)\n"
-                      << "  --size VALUE        模型输入尺寸 (默认: 640)\n\n"
-                      << "== 显示 ==\n"
-                      << "  --debug             开启 debug 可视化 (默认)\n"
-                      << "  --no-debug          仅终端输出\n\n"
-                      << "== 示例 ==\n"
-                      << "  ./kfs_detect --camera usb --config config/usb_camera.conf --debug\n"
-                      << "  ./kfs_detect --camera usb --device 0 --width 1280 --height 720 --debug\n"
-                      << "  ./kfs_detect --camera realsense --debug --conf 0.5\n\n";
-            exit(0);
+            if (cam["controls"]) {
+                auto ctrl = cam["controls"];
+                cfg.autoExposure = yamlInt(ctrl, "auto_exposure", cfg.autoExposure);
+                cfg.exposure     = yamlInt(ctrl, "exposure",      cfg.exposure);
+                cfg.gain         = yamlInt(ctrl, "gain",          cfg.gain);
+                cfg.brightness   = yamlInt(ctrl, "brightness",    cfg.brightness);
+                cfg.contrast     = yamlInt(ctrl, "contrast",      cfg.contrast);
+                cfg.saturation   = yamlInt(ctrl, "saturation",    cfg.saturation);
+                cfg.whiteBalance = yamlInt(ctrl, "white_balance", cfg.whiteBalance);
+                cfg.sharpness    = yamlInt(ctrl, "sharpness",     cfg.sharpness);
+            }
         }
+
+        // model
+        if (root["model"]) {
+            auto mdl = root["model"];
+            cfg.modelPath  = yamlStr(mdl, "path",           cfg.modelPath);
+            cfg.inputSize  = yamlInt(mdl, "input_size",     cfg.inputSize);
+            cfg.confThresh = yamlFloat(mdl, "conf_threshold", cfg.confThresh);
+            cfg.iouThresh  = yamlFloat(mdl, "iou_threshold",  cfg.iouThresh);
+        }
+
+        // display
+        if (root["display"]) {
+            auto disp = root["display"];
+            cfg.debug = yamlBool(disp, "debug", cfg.debug);
+        }
+
+    } catch (const std::exception& e) {
+        std::cout << "[ERROR] YAML 解析失败: " << e.what() << "\n";
+        exit(1);
     }
-    return args;
+    return cfg;
+}
+
+static void printUsage() {
+    std::cout << "用法: ./kfs_detect [--config PATH] [--list-cameras] [--help]\n\n"
+              << "== 选项 ==\n"
+              << "  --config PATH       指定配置文件 (默认: config/kfs_config.yaml)\n"
+              << "  --list-cameras      列出所有 USB 摄像头及支持的分辨率\n"
+              << "  --help / -h         显示帮助\n\n"
+              << "== 配置文件格式 ==\n"
+              << "  所有参数统一在 YAML 文件中设置: config/kfs_config.yaml\n"
+              << "  包含: 相机类型/分辨率/帧率/编码/V4L2控制/模型参数/显示\n\n"
+              << "== 示例 ==\n"
+              << "  ./build/kfs_detect                                    # 使用默认配置\n"
+              << "  ./build/kfs_detect --config my_config.yaml            # 指定配置\n"
+              << "  ./build/kfs_detect --list-cameras                    # 查看可用摄像头\n\n";
+    exit(0);
+}
+
+// ============================================================
+// 检测模式
+// ============================================================
+enum class DetectMode {
+    IDLE,          // 仅显示视频流, 不推理
+    SINGLE_SHOT,   // 触发一次推理, 完成后回到 IDLE
+    CONTINUOUS     // 持续推理每一帧
+};
+
+static const char* modeLabel(DetectMode m) {
+    switch (m) {
+        case DetectMode::IDLE:       return "IDLE (press SPACE to detect)";
+        case DetectMode::SINGLE_SHOT:return "SINGLE-SHOT";
+        case DetectMode::CONTINUOUS: return "CONTINUOUS";
+    }
+    return "";
 }
 
 // ============================================================
@@ -225,7 +202,8 @@ static const cv::Scalar CLASS_COLORS[] = {
     cv::Scalar(0, 0, 255),   // F  — 红色
 };
 
-static void drawDebug(cv::Mat& frame, const FrameResult& result, double fps) {
+static void drawDebug(cv::Mat& frame, const FrameResult& result, double fps,
+                      DetectMode mode) {
     const int thickness = 2;
     const double fontScale = 0.7;
     const int fontFace = cv::FONT_HERSHEY_SIMPLEX;
@@ -273,8 +251,15 @@ static void drawDebug(cv::Mat& frame, const FrameResult& result, double fps) {
                 cv::Point(10, 30), fontFace, 0.6,
                 cv::Scalar(0, 255, 255), 1);
 
-    cv::putText(frame, "DEBUG MODE | Press Q/ESC to quit | S to screenshot",
-                cv::Point(10, frame.rows - 12), fontFace, 0.5,
+    // 底部: 模式 + 按键提示
+    cv::Scalar modeColor = (mode == DetectMode::IDLE) ? cv::Scalar(100, 200, 100)
+                           : (mode == DetectMode::CONTINUOUS) ? cv::Scalar(0, 200, 255)
+                           : cv::Scalar(0, 255, 255);
+    cv::putText(frame, modeLabel(mode),
+                cv::Point(10, frame.rows - 36), fontFace, 0.55,
+                modeColor, 1);
+    cv::putText(frame, "SPACE: detect once | D: toggle continuous | S: screenshot | Q/ESC: quit",
+                cv::Point(10, frame.rows - 12), fontFace, 0.45,
                 cv::Scalar(200, 200, 200), 1);
 }
 
@@ -357,12 +342,55 @@ struct CameraHandle {
 // ============================================================
 
 int main(int argc, char** argv) {
+    // 重定向 stderr 到 /dev/null, 抑制 libjpeg "Corrupt JPEG data" 警告
+    if (freopen("/dev/null", "w", stderr) == nullptr) { /* 忽略 */ }
+
     // 信号处理
     std::signal(SIGINT,  signalHandler);
     std::signal(SIGTERM, signalHandler);
 
-    // 解析命令行
-    Args args = parseArgs(argc, argv);
+    // 解析命令行 → 仅 --config 和 --list-cameras / --help
+    std::string configPath = "config/kfs_config.yaml";
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--config" && i + 1 < argc) {
+            configPath = argv[++i];
+        } else if (arg == "--list-cameras") {
+            std::cout << "═══════════════════════════════════════════\n";
+            std::cout << "  系统 USB 摄像头列表\n";
+            std::cout << "═══════════════════════════════════════════\n\n";
+            auto devices = USBCapture::listDevices();
+            if (devices.empty()) {
+                std::cout << "  未检测到 USB 摄像头\n\n";
+                std::cout << "  提示:\n";
+                std::cout << "    - 检查 USB 连接: ls /dev/video*\n";
+                std::cout << "    - 检查权限: sudo usermod -aG video $USER\n";
+            } else {
+                for (int dev : devices) {
+                    std::cout << "  /dev/video" << dev << ":\n";
+                    auto resList = USBCapture::listResolutions(dev);
+                    if (resList.empty()) {
+                        std::cout << "    (无法获取分辨率列表)\n";
+                    } else {
+                        for (const auto& r : resList) {
+                            std::cout << "    - " << r.width << "×" << r.height
+                                      << " @ " << static_cast<int>(r.fps) << " fps\n";
+                        }
+                    }
+                }
+            }
+            std::cout << "\n═══════════════════════════════════════════\n";
+            exit(0);
+        } else if (arg == "--help" || arg == "-h") {
+            printUsage();
+        } else {
+            std::cout << "[WARN] 未知参数: " << arg << " (用 --help 查看用法)\n";
+        }
+    }
+
+    // 加载 YAML 配置
+    Config cfg = loadYamlConfig(configPath);
+    std::cout << "[CONFIG] 已加载: " << configPath << std::endl;
 
     std::cout << "╔══════════════════════════════════════════╗\n";
     std::cout << "║   KFS 目标检测 — 实时推理               ║\n";
@@ -370,33 +398,33 @@ int main(int argc, char** argv) {
     std::cout << "╚══════════════════════════════════════════╝\n\n";
 
     // 1) 加载 YOLO 检测器
-    YoloDetector detector(args.modelPath, args.inputSize,
-                          args.confThresh, args.iouThresh);
+    YoloDetector detector(cfg.modelPath, cfg.inputSize,
+                          cfg.confThresh, cfg.iouThresh);
 
     // 2) 启动相机 (RealSense 或 USB)
     CameraHandle camera;
     std::string  windowName;
 
-    if (args.cameraType == "usb") {
+    if (cfg.cameraType == "usb") {
         camera.type = CameraType::USB;
-        camera.usb  = new USBCapture(args.usbDevice,
-                                     args.usbWidth, args.usbHeight, args.usbFPS,
-                                     args.usbFourcc);
+        camera.usb  = new USBCapture(cfg.usbDevice,
+                                     cfg.usbWidth, cfg.usbHeight, cfg.usbFPS,
+                                     cfg.usbFourcc);
 
         // 先设置 V4L2 控制 (在 start() 内部通过 v4l2-ctl 在 OpenCV 打开前应用)
         USBCapture::CameraControls ctrl;
-        ctrl.autoExposure = args.autoExposure;
-        ctrl.exposure     = args.exposure;
-        ctrl.gain         = args.gain;
-        ctrl.brightness   = args.brightness;
-        ctrl.contrast     = args.contrast;
-        ctrl.saturation   = args.saturation;
-        ctrl.whiteBalance = args.whiteBalance;
-        ctrl.sharpness    = args.sharpness;
+        ctrl.autoExposure = cfg.autoExposure;
+        ctrl.exposure     = cfg.exposure;
+        ctrl.gain         = cfg.gain;
+        ctrl.brightness   = cfg.brightness;
+        ctrl.contrast     = cfg.contrast;
+        ctrl.saturation   = cfg.saturation;
+        ctrl.whiteBalance = cfg.whiteBalance;
+        ctrl.sharpness    = cfg.sharpness;
         camera.usb->applyControls(ctrl);
 
         if (!camera.usb->start()) {
-            std::cerr << "[ERROR] 无法启动 USB 摄像头 /dev/video" << args.usbDevice << "\n"
+            std::cout << "[ERROR] 无法启动 USB 摄像头 /dev/video" << cfg.usbDevice << "\n"
                       << "  请检查: 1) USB 连接  2) 权限 (sudo usermod -aG video $USER)\n"
                       << "  提示: 运行 ./kfs_detect --list-cameras 查看可用摄像头\n";
             return 1;
@@ -415,7 +443,7 @@ int main(int argc, char** argv) {
         camera.rs   = new RealSenseCapture(1920, 1080, 30);
 
         if (!camera.rs->start()) {
-            std::cerr << "[ERROR] 无法启动 RealSense D415 相机！\n"
+            std::cout << "[ERROR] 无法启动 RealSense D415 相机！\n"
                       << "  请检查: 1) USB 连接  2) udev 规则  3) 权限\n"
                       << "  提示: 使用 --camera usb 切换到普通 USB 摄像头\n";
             return 1;
@@ -431,7 +459,7 @@ int main(int argc, char** argv) {
     }
 #else
     else {
-        std::cerr << "[ERROR] 此编译版本不支持 RealSense (未链接 librealsense2)\n"
+        std::cout << "[ERROR] 此编译版本不支持 RealSense (未链接 librealsense2)\n"
                   << "  请使用 --camera usb 或重新编译带 RealSense 支持的版本\n";
         return 1;
     }
@@ -443,39 +471,66 @@ int main(int argc, char** argv) {
     auto   tStart     = std::chrono::high_resolution_clock::now();
     double fps        = 0.0;
 
-    std::cout << "\n[INFO] 开始推理... "
-              << (args.debug ? "(DEBUG 可视化)" : "(控制台输出)")
-              << "\n  按 Ctrl+C 退出\n\n";
+    DetectMode detectMode = DetectMode::IDLE;
+    FrameResult lastResult;  // 保存最后一次推理结果用于叠加显示
+
+    // 提前创建窗口 (只一次, 否则每帧重建严重拖慢渲染)
+    if (cfg.debug) {
+        cv::namedWindow(windowName, cv::WINDOW_NORMAL);
+    }
+
+    std::cout << "\n[INFO] YOLO 模型已加载, 等待触发推理...\n"
+              << (cfg.debug ? "  按 SPACE 单次推理 | 按 D 持续推理 | Q/ESC 退出\n"
+                            : "  按 Ctrl+C 退出\n")
+              << "\n";
 
     while (g_running) {
-        // 取帧
+        // 取帧 (先检查退出标志, 避免阻塞在 read 中无法退出)
+        if (!g_running) break;
         if (!camera.getFrame(frame) || frame.empty()) {
+            if (!g_running) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        // 推理
-        auto result = detector.detect(frame);
+        // 根据模式决定是否推理
+        bool shouldDetect = (detectMode == DetectMode::CONTINUOUS)
+                         || (detectMode == DetectMode::SINGLE_SHOT);
+
+        if (shouldDetect) {
+            lastResult = detector.detect(frame);
+            if (detectMode == DetectMode::SINGLE_SHOT) {
+                detectMode = DetectMode::IDLE;  // 单次完成, 回到 IDLE
+            }
+        }
 
         // FPS 计算
         frameCount++;
-        auto tNow = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(tNow - tStart).count();
-        if (elapsed >= 1.0) {
-            fps = frameCount / elapsed;
-            frameCount = 0;
-            tStart = tNow;
+        {
+            auto tFps = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(tFps - tStart).count();
+            if (elapsed >= 1.0) {
+                fps = frameCount / elapsed;
+                frameCount = 0;
+                tStart = tFps;
+            }
         }
 
-        if (args.debug) {
+        if (cfg.debug) {
             // === Debug 模式: 显示画面 ===
-            drawDebug(frame, result, fps);
-            cv::namedWindow(windowName, cv::WINDOW_NORMAL);
+            drawDebug(frame, lastResult, fps, detectMode);
             cv::imshow(windowName, frame);
 
             int key = cv::waitKey(1) & 0xFF;
             if (key == 'q' || key == 27) {  // q 或 ESC
                 g_running = false;
+            } else if (key == ' ') {  // 空格: 单次推理
+                detectMode = DetectMode::SINGLE_SHOT;
+                std::cout << "[INFO] 触发单次推理" << std::endl;
+            } else if (key == 'd' || key == 'D') {  // D: 切换持续推理
+                detectMode = (detectMode == DetectMode::CONTINUOUS)
+                           ? DetectMode::IDLE : DetectMode::CONTINUOUS;
+                std::cout << "[INFO] 检测模式: " << modeLabel(detectMode) << std::endl;
             } else if (key == 's') {
                 // 截图
                 auto now = std::chrono::system_clock::now();
@@ -486,14 +541,16 @@ int main(int argc, char** argv) {
                 std::cout << "[SAVE] 截图已保存: " << fname << std::endl;
             }
         } else {
-            // === 非 Debug: 仅终端输出 ===
-            printResults(result);
+            // === 非 Debug: 仅终端输出 (仅推理时打印) ===
+            if (shouldDetect) {
+                printResults(lastResult);
+            }
         }
     }
 
     // 4) 清理
     camera.stop();
-    if (args.debug) {
+    if (cfg.debug) {
         cv::destroyAllWindows();
     }
 

@@ -136,7 +136,7 @@ struct YoloDetector::Impl {
         int stride = 4 + numClasses;  // 7
 
         if (totalElements % stride != 0) {
-            std::cerr << "[YOLO] 输出维度不匹配: total=" << totalElements
+            std::cout << "[YOLO] 输出维度不匹配: total=" << totalElements
                       << " stride=" << stride << std::endl;
             return {};
         }
